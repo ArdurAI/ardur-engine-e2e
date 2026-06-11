@@ -7,3 +7,6 @@
 [submodule "vendor/ardur-article-synthesizer"]
 	path = vendor/ardur-article-synthesizer
 	url = https://github.com/ArdurAI/ardur-article-synthesizer
+[submodule "vendor/ardur-pipeline"]
+	path = vendor/ardur-pipeline
+	url = https://github.com/ArdurAI/ardur-pipeline

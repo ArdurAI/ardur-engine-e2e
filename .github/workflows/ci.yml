@@ -8,6 +8,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,8 +24,16 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Run E2E tests
+      - name: Run unit E2E tests (in-process library APIs)
         env:
           ARDUR_AI_ENABLED: '0'
           ARDUR_AI_PROVIDER: deterministic
-        run: npm test
+          ARDUR_AI_MAX_GENERATIONS: '0'
+        run: npm run test:unit
+
+      - name: Run pipeline E2E tests (real CLI-backed runners)
+        env:
+          ARDUR_AI_ENABLED: '0'
+          ARDUR_AI_PROVIDER: deterministic
+          ARDUR_AI_MAX_GENERATIONS: '0'
+        run: npm run test:pipeline

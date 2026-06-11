@@ -10,7 +10,9 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test --experimental-strip-types src/tests/*.test.ts",
-    "test:verbose": "node --test --reporter spec --experimental-strip-types src/tests/*.test.ts"
+    "test:verbose": "node --test --experimental-strip-types src/tests/*.test.ts",
+    "test:unit": "node --test --experimental-strip-types src/tests/ranking.test.ts src/tests/top10.test.ts src/tests/synthesizer.test.ts",
+    "test:pipeline": "node --test --experimental-strip-types src/tests/pipeline.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
