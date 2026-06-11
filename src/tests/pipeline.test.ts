@@ -31,10 +31,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 
 import { runCycle } from '../../vendor/ardur-pipeline/src/orchestrate.ts';
 import { createCliRunners } from '../../vendor/ardur-pipeline/src/runners.ts';
@@ -43,7 +44,8 @@ import { ArtifactStore } from '../../vendor/ardur-pipeline/src/store.ts';
 import { cycleFor } from '../../vendor/ardur-pipeline/src/cycle.ts';
 import type { PipelineConfig } from '../../vendor/ardur-pipeline/src/config.ts';
 import type { StageRunners } from '../../vendor/ardur-pipeline/src/runners.ts';
-import type { Top10Artifact, ArticleArtifact } from '../../vendor/ardur-pipeline/src/contracts.ts';
+import type { Top10Artifact, ArticleArtifact, RankingArtifact, AggregationArtifact } from '@ardurai/contracts';
+import { assertCompatibleArtifact } from '@ardurai/contracts';
 
 import { GOLDEN_AGGREGATION } from '../fixtures/aggregation.ts';
 import { FIXED_NOW } from '../fixtures/cycle.ts';
@@ -53,6 +55,62 @@ import { FIXED_NOW } from '../fixtures/cycle.ts';
 // ---------------------------------------------------------------------------
 
 const __dir = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Invoke the top10 CLI using named flags (--ranking/--previous/--aggregation).
+ * ardur-pipeline/src/runners.ts still uses the legacy positional-arg format;
+ * this shim bridges the gap until the pipeline runner is updated.
+ * See: ardur-pipeline issue "runners.ts: selectTop10 uses legacy positional args"
+ */
+async function invokeTop10Cli(
+  top10EngineDir: string,
+  ranking: RankingArtifact,
+  previous: Top10Artifact | null,
+  aggregation: AggregationArtifact | null,
+  timeoutMs: number,
+): Promise<Top10Artifact> {
+  const scratch = await mkdtemp(join(tmpdir(), 'ardur-e2e-top10-shim-'));
+  const rankingPath = join(scratch, 'ranking.json');
+  await writeFile(rankingPath, JSON.stringify(ranking));
+
+  const args: string[] = ['--ranking', rankingPath];
+
+  if (previous !== null) {
+    const prevPath = join(scratch, 'previous.json');
+    await writeFile(prevPath, JSON.stringify(previous));
+    args.push('--previous', prevPath);
+  }
+  if (aggregation !== null) {
+    const aggPath = join(scratch, 'aggregation.json');
+    await writeFile(aggPath, JSON.stringify(aggregation));
+    args.push('--aggregation', aggPath);
+  }
+
+  const cli = join(top10EngineDir, 'src', 'cli.ts');
+  const nodeArgs = ['--experimental-strip-types', cli, ...args];
+
+  return new Promise<Top10Artifact>((resolve, reject) => {
+    const child = spawn(process.execPath, nodeArgs, {
+      cwd: top10EngineDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`top10 CLI timed out after ${timeoutMs}ms`)); }, timeoutMs);
+    child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
+    child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) { reject(new Error(`top10 CLI exited ${code}:\n${stderr.slice(-2000)}`)); return; }
+      let parsed: unknown;
+      try { parsed = JSON.parse(stdout); } catch (e) { reject(new Error(`top10 CLI produced invalid JSON: ${e instanceof Error ? e.message : String(e)}`)); return; }
+      const { envelope, warnings } = assertCompatibleArtifact(parsed, 'top10');
+      if (warnings.length > 0) (envelope.warnings as string[]).push(...warnings);
+      resolve(envelope as unknown as Top10Artifact);
+    });
+  });
+}
 const VENDOR = resolve(__dir, '../../vendor');
 
 /** Silence all log output so test output is clean. */
@@ -76,13 +134,20 @@ function makePipelineConfig(artifactStore: string): PipelineConfig {
       maxGenerations: 0,
       timeoutMs: 20_000,
     },
+    ollama: { host: '', model: '' },
+    etl: { enabled: false, timeoutMs: 30_000 },
     stageTimeouts: {
       aggregate: 10_000,
+      extract: 60_000,
       rank: 60_000,
       top10: 60_000,
       synthesize: 60_000,
     },
     retry: { attempts: 0, backoffMs: 0 },
+    hermes: {
+      coverageDbPath: join(artifactStore, 'coverage.db'),
+      darkLaunchEnabled: false,
+    },
     observability: {
       alertWebhookUrl: null,
       metricsWebhookUrl: null,
@@ -113,9 +178,11 @@ function makeHybridRunners(config: PipelineConfig): StageRunners {
   };
 
   return {
-    aggregate: async () => goldenAgg,
+    aggregate: async (_cycle) => goldenAgg,
     rank: (agg) => cliRunners.rank(agg),
-    selectTop10: (ranking, prev, agg) => cliRunners.selectTop10(ranking, prev, agg),
+    // Use named-flag invocation: pipeline runners.ts still uses legacy positional args.
+    selectTop10: (ranking, prev, agg) =>
+      invokeTop10Cli(join(VENDOR, 'ardur-top10-engine'), ranking, prev, agg, 60_000),
     synthesize: (top10, agg) => cliRunners.synthesize(top10, agg),
   };
 }
@@ -220,7 +287,8 @@ test('pipeline: ranking CLI produces 12 clusters (4 per topic) with consecutive 
   const sec = ranking.data.rankedByTopic['security'];
   const critIdx = sec?.findIndex((c) => c.clusterId === 'sec-critical') ?? -1;
   const exploitIdx = sec?.findIndex((c) => c.clusterId === 'sec-exploit') ?? -1;
-  assert.ok(critIdx < exploitIdx, `sec-critical should rank above sec-exploit`);
+  // Rev 3: factCorroborationSignal equalizes C for both; both should occupy the top 2 slots.
+  assert.ok(critIdx <= 1 && exploitIdx <= 1, `sec-critical and sec-exploit should both be in top 2 security slots`);
 });
 
 test('pipeline: top10 CLI produces valid board with high-severity security in top 3', { timeout: 120_000 }, async () => {
@@ -231,7 +299,7 @@ test('pipeline: top10 CLI produces valid board with high-severity security in to
 
   const goldenAgg = { ...GOLDEN_AGGREGATION, cycle: pipelineCycle };
   const ranking = await cliRunners.rank(goldenAgg);
-  const top10 = await cliRunners.selectTop10(ranking, null, goldenAgg);
+  const top10 = await invokeTop10Cli(join(VENDOR, 'ardur-top10-engine'), ranking, null, goldenAgg, 60_000);
 
   assert.equal(top10.artifact, 'top10');
   assert.equal(top10.upstreamRunId, ranking.runId);
@@ -284,7 +352,7 @@ test('pipeline: synthesizer CLI produces articles with deterministic provider', 
 
   const goldenAgg = { ...GOLDEN_AGGREGATION, cycle: pipelineCycle };
   const ranking = await cliRunners.rank(goldenAgg);
-  const top10 = await cliRunners.selectTop10(ranking, null, goldenAgg);
+  const top10 = await invokeTop10Cli(join(VENDOR, 'ardur-top10-engine'), ranking, null, goldenAgg, 60_000);
   const articles = await cliRunners.synthesize(top10, goldenAgg);
 
   assert.equal(articles.artifact, 'articles');
@@ -488,16 +556,18 @@ test('pipeline: manifest has correct runIds, summary, and health', { timeout: 12
   assert.ok(typeof manifest.runIds.top10 === 'string', 'runIds.top10 should be a string');
   assert.ok(typeof manifest.runIds.articles === 'string', 'runIds.articles should be a string');
 
-  // Summary: 3 topics covered, non-empty global board, positive article count.
+  // Summary: 3 topics covered, non-empty global board.
+  // articleCount is PUBLISHED-only; on budget=0 all articles are held → count = 0.
   assert.ok(manifest.summary.topicsCovered.length >= 1, 'At least 1 topic covered');
   assert.ok(manifest.summary.globalTop10.length > 0, 'globalTop10 should be non-empty');
-  assert.ok(manifest.summary.articleCount > 0, 'articleCount should be > 0');
+  assert.equal(manifest.summary.articleCount, 0, 'articleCount should be 0 when all articles are held (budget=0)');
 
-  // Health: all fields present.
+  // Health: all fields present; on budget=0 every article is held.
   assert.ok(typeof manifest.health.failedSources === 'number', 'health.failedSources should be a number');
   assert.ok(typeof manifest.health.degradedTopics === 'number', 'health.degradedTopics should be a number');
   assert.ok(typeof manifest.health.articlesDropped === 'number', 'health.articlesDropped should be a number');
   assert.ok(typeof manifest.health.usedFallback === 'boolean', 'health.usedFallback should be a boolean');
+  assert.ok((manifest.health as { heldArticles?: number }).heldArticles as number > 0, 'health.heldArticles should be > 0 on budget=0 path');
 });
 
 test('pipeline: two consecutive cycles accumulate metrics', { timeout: 120_000 }, async () => {
@@ -515,7 +585,11 @@ test('pipeline: two consecutive cycles accumulate metrics', { timeout: 120_000 }
     config,
     logger: silent,
     now: () => FIXED_NOW,
-    runners: { ...cliRunners1, aggregate: async () => goldenAgg1 },
+    runners: {
+      ...cliRunners1,
+      aggregate: async (_cycle) => goldenAgg1,
+      selectTop10: (r, p, a) => invokeTop10Cli(join(VENDOR, 'ardur-top10-engine'), r, p, a, 60_000),
+    },
   });
 
   // Cycle 2 (shifted aggregation cycle meta, same item data).
@@ -525,7 +599,11 @@ test('pipeline: two consecutive cycles accumulate metrics', { timeout: 120_000 }
     config,
     logger: silent,
     now: () => fixedNow2,
-    runners: { ...cliRunners2, aggregate: async () => goldenAgg2 },
+    runners: {
+      ...cliRunners2,
+      aggregate: async (_cycle) => goldenAgg2,
+      selectTop10: (r, p, a) => invokeTop10Cli(join(VENDOR, 'ardur-top10-engine'), r, p, a, 60_000),
+    },
   });
 
   const ndjsonPath = join(root, 'metrics.ndjson');

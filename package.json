@@ -15,6 +15,7 @@
     "test:pipeline": "node --test --experimental-strip-types src/tests/pipeline.test.ts"
   },
   "devDependencies": {
+    "@ardurai/contracts": "file:../ardur-contracts",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0"
   }

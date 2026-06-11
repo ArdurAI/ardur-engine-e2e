@@ -14,9 +14,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { CONTRACT_REVISION } from '@ardurai/contracts';
 import { runRanking } from '../../vendor/ardur-ranking-engine/src/index.ts';
 import {
   corroborationScore,
+  corroborationSignal,
   recencyDecay,
   recencyHalfLifeHours,
   sourceTierSignal,
@@ -81,15 +83,15 @@ test('ScoreBreakdown satisfies the formula: total ≈ recency × core × diversi
 
   for (const cluster of aiRanked) {
     const { score } = cluster;
+    // Rev 3: score.technicalSignificance is now a typed field
+    const T = score.technicalSignificance ?? 0;
     const reconstructed = score.recency * (
       PROFILE.weights.corroboration * score.corroboration +
-      PROFILE.weights.technicalSignificance * (score.weights['technicalSignificance'] ?? 0) * 0 +
+      PROFILE.weights.technicalSignificance * T +
       PROFILE.weights.sourceTier * score.credibility +
       PROFILE.weights.engagement * score.interaction
     ) * score.diversity;
-    // The weights record in ScoreBreakdown doesn't expose T value directly,
-    // but we CAN verify total = recency × (0.30·C + 0.22·S + 0.20·E + T_contribution) × diversity
-    // A looser check: total must be in (0, 1]
+    // Verify total = recency × (0.30·C + 0.28·T + 0.22·S + 0.20·E) × diversity ∈ (0, 1]
     assert.ok(score.total > 0, `score.total > 0 for ${cluster.clusterId}`);
     assert.ok(score.total <= 1.0 + TOLERANCE, `score.total <= 1 for ${cluster.clusterId}`);
     assert.ok(score.recency > 0 && score.recency <= 1.0, `recency ∈ (0,1]`);
@@ -97,7 +99,6 @@ test('ScoreBreakdown satisfies the formula: total ≈ recency × core × diversi
     assert.ok(score.corroboration >= 0 && score.corroboration <= 1, `C ∈ [0,1]`);
     assert.ok(score.credibility >= 0 && score.credibility <= 1, `S ∈ [0,1]`);
     assert.ok(score.interaction >= 0 && score.interaction <= 1, `E ∈ [0,1]`);
-    void reconstructed; // keeps TS happy about the unused variable
   }
 });
 
@@ -116,10 +117,12 @@ test('ai-delta ranks last in AI topic (single source, oldest)', () => {
   assert.equal(last?.clusterId, 'ai-delta', `Expected ai-delta at last rank, got ${last?.clusterId}`);
 });
 
-test('security ordering: sec-critical ranks #1 (T=1.0 > sec-exploit T=0.95, more sources)', () => {
-  // sec-critical: critical severity + kubernetes → T=min(1.0, 0.90+0.10)=1.0, 4 sources
-  // sec-exploit: actively exploited → T=0.95, 3 sources
-  // Higher T with more sources beats slightly higher freshness at these ages
+test('security ordering: both sec-critical and sec-exploit are in the top 2 security clusters', () => {
+  // Rev 3: factCorroborationSignal gives both clusters C≈1.0 (both have corroborated facts).
+  // With C equalized, sec-exploit (age ~0.33h, interaction 8) beats sec-critical (age ~2h,
+  // interaction 5) on the recency+engagement dimension despite lower T (0.95 vs 1.0).
+  // Both still dominate sec-medium and sec-low — the important assertion is that the
+  // two highest-signal security clusters occupy the top 2 positions.
   const result = runRanking(GOLDEN_AGGREGATION, { now: FIXED_NOW });
   const secRanked = result.data.rankedByTopic['security'];
   assert.ok(secRanked && secRanked.length >= 2);
@@ -128,7 +131,9 @@ test('security ordering: sec-critical ranks #1 (T=1.0 > sec-exploit T=0.95, more
   const exploitIdx = secRanked.findIndex((c) => c.clusterId === 'sec-exploit');
   assert.ok(critIdx !== -1, 'sec-critical not found');
   assert.ok(exploitIdx !== -1, 'sec-exploit not found');
-  assert.ok(critIdx < exploitIdx, `sec-critical (rank ${critIdx + 1}) should beat sec-exploit (rank ${exploitIdx + 1})`);
+  // Both should be in the top 2 positions (dominating sec-medium and sec-low).
+  assert.ok(critIdx <= 1, `sec-critical should be in top 2, got rank ${critIdx + 1}`);
+  assert.ok(exploitIdx <= 1, `sec-exploit should be in top 2, got rank ${exploitIdx + 1}`);
 });
 
 test('security ordering: sec-medium and sec-low rank below exploit and critical', () => {
@@ -164,9 +169,17 @@ test('score formula: ai-alpha score matches independent computation', () => {
   const alphaCluster = aiClusters.find((c) => c.clusterId === 'ai-alpha');
   assert.ok(alphaCluster);
 
-  const signalInput = { cluster: alphaCluster, members: alphaMembers, now: FIXED_NOW, profile: PROFILE };
+  const alphaFacts = GOLDEN_AGGREGATION.data.factsByCluster?.['ai-alpha'];
+  const signalInput = {
+    cluster: alphaCluster,
+    members: alphaMembers,
+    now: FIXED_NOW,
+    profile: PROFILE,
+    ...(alphaFacts !== undefined && { facts: alphaFacts }),
+  };
 
-  const C = corroborationScore(countIndependentOwners(signalInput), PROFILE);
+  // Rev 3: corroborationSignal blends domain-based and fact-level (max of both)
+  const C = corroborationSignal(signalInput);
   const T = technicalSignificanceSignal(signalInput);
   const S = sourceTierSignal(signalInput);
   const E = engagementSignal(signalInput);
@@ -202,9 +215,17 @@ test('score formula: sec-critical score matches independent computation', () => 
   const critCluster = secClusters.find((c) => c.clusterId === 'sec-critical');
   assert.ok(critCluster);
 
-  const signalInput = { cluster: critCluster, members: critMembers, now: FIXED_NOW, profile: PROFILE };
+  const critFacts = GOLDEN_AGGREGATION.data.factsByCluster?.['sec-critical'];
+  const signalInput = {
+    cluster: critCluster,
+    members: critMembers,
+    now: FIXED_NOW,
+    profile: PROFILE,
+    ...(critFacts !== undefined && { facts: critFacts }),
+  };
 
-  const C = corroborationScore(countIndependentOwners(signalInput), PROFILE);
+  // Rev 3: corroborationSignal blends domain-based and fact-level (max of both)
+  const C = corroborationSignal(signalInput);
   const T = technicalSignificanceSignal(signalInput);
   const S = sourceTierSignal(signalInput);
   const E = engagementSignal(signalInput);
@@ -287,6 +308,58 @@ test('score weight profile is balanced@v1', () => {
   assert.equal(alpha.score.weights['technicalSignificance'], 0.28);
   assert.equal(alpha.score.weights['sourceTier'], 0.22);
   assert.equal(alpha.score.weights['engagement'], 0.2);
+});
+
+// ---------------------------------------------------------------------------
+// Rev 3 contract assertions
+// ---------------------------------------------------------------------------
+
+test('Rev 3: artifact carries contractRevision 3', () => {
+  const result = runRanking(GOLDEN_AGGREGATION, { now: FIXED_NOW });
+  assert.equal(result.contractRevision, CONTRACT_REVISION, 'contractRevision should be 3');
+});
+
+test('Rev 3: score.technicalSignificance is a typed numeric field on ScoreBreakdown', () => {
+  const result = runRanking(GOLDEN_AGGREGATION, { now: FIXED_NOW });
+  // sec-critical has the highest T signal; confirm it is exposed as a typed field
+  const secRanked = result.data.rankedByTopic['security'];
+  const critical = secRanked?.find((c) => c.clusterId === 'sec-critical');
+  assert.ok(critical, 'sec-critical not found');
+  assert.ok(
+    typeof critical.score.technicalSignificance === 'number',
+    `score.technicalSignificance should be a number, got ${typeof critical.score.technicalSignificance}`,
+  );
+  assert.ok(critical.score.technicalSignificance > 0, 'sec-critical T signal should be > 0');
+});
+
+test('Rev 3: RankedCluster.gateStatus is one of auto/flagged/hold when present', () => {
+  const result = runRanking(GOLDEN_AGGREGATION, { now: FIXED_NOW });
+  const allowed = new Set(['auto', 'flagged', 'hold', undefined]);
+  for (const clusters of Object.values(result.data.rankedByTopic)) {
+    for (const c of clusters) {
+      assert.ok(
+        allowed.has(c.gateStatus),
+        `Unexpected gateStatus '${c.gateStatus}' on cluster ${c.clusterId}`,
+      );
+    }
+  }
+});
+
+test('Rev 3: RankedCluster.references populated from aggregation items', () => {
+  const result = runRanking(GOLDEN_AGGREGATION, { now: FIXED_NOW });
+  // Ranking engine attaches references so top10 can skip loading the full aggregation (§6.1b).
+  const aiRanked = result.data.rankedByTopic['ai'];
+  const alpha = aiRanked?.find((c) => c.clusterId === 'ai-alpha');
+  assert.ok(alpha, 'ai-alpha not found');
+  assert.ok(
+    alpha.references !== undefined && alpha.references.length > 0,
+    'ai-alpha should have references attached by the ranking engine',
+  );
+  for (const ref of alpha.references ?? []) {
+    assert.ok(ref.url.length > 0, 'Reference url should be non-empty');
+    assert.ok(ref.source.length > 0, 'Reference source should be non-empty');
+    assert.ok(ref.title.length > 0, 'Reference title should be non-empty');
+  }
 });
 
 test('multi-tier clusters earn higher diversity multipliers than single-tier clusters', () => {

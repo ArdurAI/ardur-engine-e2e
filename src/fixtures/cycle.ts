@@ -1,4 +1,4 @@
-import type { CycleMeta, TopicMeta } from '../../vendor/ardur-ranking-engine/src/contracts.ts';
+import type { CycleMeta, TopicMeta } from '@ardurai/contracts';
 
 /**
  * Fixed reference time: 10 minutes before the cycle window closes.

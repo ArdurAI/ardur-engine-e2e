@@ -27,7 +27,7 @@ import { runRanking } from '../../vendor/ardur-ranking-engine/src/index.ts';
 import { selectTop10 } from '../../vendor/ardur-top10-engine/src/index.ts';
 import { runSynthesis } from '../../vendor/ardur-article-synthesizer/src/index.ts';
 import type { SynthesizedArticle } from '../../vendor/ardur-article-synthesizer/src/index.ts';
-import { SCHEMA_VERSION } from '../../vendor/ardur-article-synthesizer/src/contracts.ts';
+import { SCHEMA_VERSION, CONTRACT_REVISION } from '../../vendor/ardur-article-synthesizer/src/contracts.ts';
 import { MAX_QUOTE_WORDS } from '../../vendor/ardur-article-synthesizer/src/copyright.ts';
 import { MIN_BODY_WORDS, SECTION_PLAN } from '../../vendor/ardur-article-synthesizer/src/assemble.ts';
 import { VOICE_STYLE } from '../../vendor/ardur-article-synthesizer/src/style.ts';
@@ -337,5 +337,35 @@ test('generatedAt is an ISO 8601 UTC timestamp on every article', async () => {
   const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
   for (const article of articles.data.articles) {
     assert.ok(ISO_RE.test(article.generatedAt), `Article ${article.id} generatedAt '${article.generatedAt}' is not ISO 8601 UTC`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Rev 3 contract assertions
+// ---------------------------------------------------------------------------
+
+test('Rev 3: artifact carries contractRevision 3', async () => {
+  const { articles } = await buildPipeline();
+  assert.equal(articles.contractRevision, CONTRACT_REVISION, 'contractRevision should be 3');
+});
+
+test('Rev 3: all articles have editorialStatus "held" on budget=0 path', async () => {
+  // maxGenerations=0 → provider.canGenerate() returns false → buildHeldArticle() called
+  // for every entry. The orchestrator must not publish held articles to readers.
+  const { articles } = await buildPipeline();
+  for (const article of articles.data.articles) {
+    assert.equal(
+      (article as { editorialStatus?: string }).editorialStatus,
+      'held',
+      `Article ${article.id} should have editorialStatus 'held' on budget=0 path`,
+    );
+  }
+});
+
+test('Rev 3: held articles have ai.provider "deterministic" and ai.status "fallback"', async () => {
+  const { articles } = await buildPipeline();
+  for (const article of articles.data.articles) {
+    assert.equal(article.ai.provider, 'deterministic', `Held article ${article.id} should use deterministic provider`);
+    assert.equal(article.ai.status, 'fallback', `Held article ${article.id} ai.status should be 'fallback'`);
   }
 });

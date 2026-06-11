@@ -16,15 +16,21 @@
  *  - velocity is always null → engagement falls back to crossSourceMentions
  *  - latestPublishedAt controls recency; FIXED_NOW = 2026-06-11T11:50:00Z
  *  - member fingerprints are unique (domain::slug)
+ *  - Rev 3: factsByCluster and documentsByTopic populated for key clusters
  */
 
-import { SCHEMA_VERSION } from '../../vendor/ardur-ranking-engine/src/contracts.ts';
+import {
+  SCHEMA_VERSION,
+  CONTRACT_REVISION,
+} from '@ardurai/contracts';
 import type {
   AggregatedItem,
   AggregationArtifact,
   Cluster,
   InteractionMetrics,
-} from '../../vendor/ardur-ranking-engine/src/contracts.ts';
+  ExtractedFact,
+  SourceDocument,
+} from '@ardurai/contracts';
 import { CYCLE, TOPICS } from './cycle.ts';
 
 // ---------------------------------------------------------------------------
@@ -544,11 +550,197 @@ const devopsClusters: Cluster[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// The golden AggregationArtifact
+// Rev 3: ExtractedFacts — deterministic, analytically designed
+//
+// Facts for ai-alpha: 3 facts including 2 with quantity fields (for ChartBlock).
+// Facts for sec-critical: 2 corroborated facts (for provenance gate exercise).
+// Facts for sec-exploit: 2 corroborated facts.
+// Facts for devops-alpha: 2 facts including 1 with quantity (enhancement count).
+//
+// All facts have provenance[] length >= 1 (contract invariant).
+// corroboration = distinct source domains in provenance[].
+// ---------------------------------------------------------------------------
+
+const DET_PROVIDER = {
+  provider: 'deterministic' as const,
+  model: 'rules/v1',
+  status: 'fallback' as const,
+  generatedAt: '2026-06-11T11:48:00.000Z',
+};
+
+export const GOLDEN_FACTS: Record<string, ExtractedFact[]> = {
+  'ai-alpha': [
+    {
+      id: 'fact-ai-alpha-1',
+      topic: 'ai',
+      clusterId: 'ai-alpha',
+      statement: 'GPT-5 achieves top scores on standard inference benchmarks',
+      quantity: { metric: 'MMLU score', value: 94.2, unit: '%', asOf: '2026-06-11' },
+      entities: ['GPT-5', 'OpenAI', 'MMLU'],
+      provenance: [
+        { sourceDocId: 'doc-ai-a-1', sourceDomain: 'openai.com', url: 'https://openai.com/research/gpt-5' },
+        { sourceDocId: 'doc-ai-a-2', sourceDomain: 'arxiv.org', url: 'https://arxiv.org/abs/2606.00001' },
+      ],
+      corroboration: 2,
+      confidence: 'high',
+      extractedBy: DET_PROVIDER,
+    },
+    {
+      id: 'fact-ai-alpha-2',
+      topic: 'ai',
+      clusterId: 'ai-alpha',
+      statement: 'GPT-5 inference latency reduced versus prior generation',
+      quantity: { metric: 'latency reduction', value: 40, unit: '%' },
+      entities: ['GPT-5', 'inference latency', 'GPU'],
+      provenance: [
+        { sourceDocId: 'doc-ai-a-3', sourceDomain: 'thenewstack.io', url: 'https://thenewstack.io/gpt-5-deep-learning-infrastructure' },
+        { sourceDocId: 'doc-ai-a-4', sourceDomain: 'infoq.com', url: 'https://infoq.com/news/gpt-5-benchmark' },
+      ],
+      corroboration: 2,
+      confidence: 'high',
+      extractedBy: DET_PROVIDER,
+    },
+    {
+      id: 'fact-ai-alpha-3',
+      topic: 'ai',
+      clusterId: 'ai-alpha',
+      statement: 'GPT-5 training uses large GPU cluster resources',
+      entities: ['GPT-5', 'GPU', 'foundation model', 'training'],
+      provenance: [
+        { sourceDocId: 'doc-ai-a-1', sourceDomain: 'openai.com', url: 'https://openai.com/research/gpt-5' },
+      ],
+      corroboration: 1,
+      confidence: 'medium',
+      extractedBy: DET_PROVIDER,
+    },
+  ],
+  'sec-critical': [
+    {
+      id: 'fact-sec-cr-1',
+      topic: 'security',
+      clusterId: 'sec-critical',
+      statement: 'Critical Kubernetes RCE vulnerability affects admission webhook handler',
+      entities: ['Kubernetes', 'CVE', 'RCE', 'admission webhook'],
+      provenance: [
+        { sourceDocId: 'doc-sec-cr-4', sourceDomain: 'kubernetes.io', url: 'https://kubernetes.io/blog/2026/security-advisory-rce' },
+        { sourceDocId: 'doc-sec-cr-1', sourceDomain: 'thehackernews.com', url: 'https://thehackernews.com/2026/kubernetes-rce' },
+        { sourceDocId: 'doc-sec-cr-2', sourceDomain: 'bleepingcomputer.com', url: 'https://bleepingcomputer.com/news/kubernetes-rce-2026' },
+      ],
+      corroboration: 3,
+      confidence: 'high',
+      extractedBy: DET_PROVIDER,
+    },
+    {
+      id: 'fact-sec-cr-2',
+      topic: 'security',
+      clusterId: 'sec-critical',
+      statement: 'Kubernetes 1.28 through 1.31 affected by RCE flaw',
+      entities: ['Kubernetes', 'k8s', '1.28', '1.31', 'patch'],
+      provenance: [
+        { sourceDocId: 'doc-sec-cr-3', sourceDomain: 'darkreading.com', url: 'https://darkreading.com/kubernetes-cve-2026' },
+        { sourceDocId: 'doc-sec-cr-4', sourceDomain: 'kubernetes.io', url: 'https://kubernetes.io/blog/2026/security-advisory-rce' },
+      ],
+      corroboration: 2,
+      confidence: 'high',
+      extractedBy: DET_PROVIDER,
+    },
+  ],
+  'sec-exploit': [
+    {
+      id: 'fact-sec-ex-1',
+      topic: 'security',
+      clusterId: 'sec-exploit',
+      statement: 'CVE-2026-9999 is actively exploited as a zero-day in authentication libraries',
+      entities: ['CVE-2026-9999', 'zero-day', 'authentication bypass'],
+      provenance: [
+        { sourceDocId: 'doc-sec-ex-3', sourceDomain: 'nvd.nist.gov', url: 'https://nvd.nist.gov/vuln/detail/CVE-2026-9999' },
+        { sourceDocId: 'doc-sec-ex-1', sourceDomain: 'thehackernews.com', url: 'https://thehackernews.com/2026/cve-2026-9999-zero-day' },
+      ],
+      corroboration: 2,
+      confidence: 'high',
+      extractedBy: DET_PROVIDER,
+    },
+    {
+      id: 'fact-sec-ex-2',
+      topic: 'security',
+      clusterId: 'sec-exploit',
+      statement: 'Patch for CVE-2026-9999 is available and vendors advise immediate upgrade',
+      entities: ['CVE-2026-9999', 'patch', 'remediation'],
+      provenance: [
+        { sourceDocId: 'doc-sec-ex-2', sourceDomain: 'bleepingcomputer.com', url: 'https://bleepingcomputer.com/news/cve-2026-9999' },
+        { sourceDocId: 'doc-sec-ex-3', sourceDomain: 'nvd.nist.gov', url: 'https://nvd.nist.gov/vuln/detail/CVE-2026-9999' },
+      ],
+      corroboration: 2,
+      confidence: 'high',
+      extractedBy: DET_PROVIDER,
+    },
+  ],
+  'devops-alpha': [
+    {
+      id: 'fact-dv-a-1',
+      topic: 'devops',
+      clusterId: 'devops-alpha',
+      statement: 'Kubernetes 1.31 ships platform engineering and gateway API enhancements',
+      quantity: { metric: 'enhancements', value: 47, unit: 'features' },
+      entities: ['Kubernetes', 'k8s', '1.31', 'Gateway API', 'platform engineering'],
+      provenance: [
+        { sourceDocId: 'doc-dv-a-1', sourceDomain: 'kubernetes.io', url: 'https://kubernetes.io/blog/2026/kubernetes-1-31' },
+        { sourceDocId: 'doc-dv-a-2', sourceDomain: 'thenewstack.io', url: 'https://thenewstack.io/kubernetes-1-31-platform-engineering' },
+      ],
+      corroboration: 2,
+      confidence: 'high',
+      extractedBy: DET_PROVIDER,
+    },
+    {
+      id: 'fact-dv-a-2',
+      topic: 'devops',
+      clusterId: 'devops-alpha',
+      statement: 'Gateway API v1.3.0 reaches GA status in Kubernetes 1.31',
+      entities: ['Gateway API', 'GA', 'Kubernetes 1.31'],
+      provenance: [
+        { sourceDocId: 'doc-dv-a-1', sourceDomain: 'kubernetes.io', url: 'https://kubernetes.io/blog/2026/kubernetes-1-31' },
+      ],
+      corroboration: 1,
+      confidence: 'medium',
+      extractedBy: DET_PROVIDER,
+    },
+  ],
+};
+
+// ---------------------------------------------------------------------------
+// Rev 3: SourceDocuments — one per significant AggregatedItem in key clusters.
+// These back the ExtractedFacts above and propagate sourceDocIds downstream.
+// ---------------------------------------------------------------------------
+
+const aiDocuments: SourceDocument[] = [
+  { id: 'doc-ai-a-1', url: 'https://openai.com/research/gpt-5', source: 'OpenAI', sourceDomain: 'openai.com', tier: 'primary', title: 'GPT-5 ships with GPU improvements', publishedAt: '2026-06-11T10:50:00.000Z', fetchedAt: '2026-06-11T11:48:00.000Z', extraction: 'full', accessPolicy: 'allowed', wordCount: 1420, lang: 'en', contentHash: 'sha256-ai-a-1' },
+  { id: 'doc-ai-a-2', url: 'https://arxiv.org/abs/2606.00001', source: 'arXiv', sourceDomain: 'arxiv.org', tier: 'paper', title: 'Scaling LLM inference on GPU clusters', publishedAt: '2026-06-11T10:30:00.000Z', fetchedAt: '2026-06-11T11:48:00.000Z', extraction: 'full', accessPolicy: 'allowed', wordCount: 8300, lang: 'en', contentHash: 'sha256-ai-a-2' },
+  { id: 'doc-ai-a-3', url: 'https://thenewstack.io/gpt-5-deep-learning-infrastructure', source: 'The New Stack', sourceDomain: 'thenewstack.io', tier: 'technical-news', title: 'GPT-5 deep learning infrastructure view', publishedAt: '2026-06-11T11:00:00.000Z', fetchedAt: '2026-06-11T11:48:00.000Z', extraction: 'snippet', accessPolicy: 'allowed', wordCount: 980, lang: 'en', contentHash: 'sha256-ai-a-3' },
+  { id: 'doc-ai-a-4', url: 'https://infoq.com/news/gpt-5-benchmark', source: 'InfoQ', sourceDomain: 'infoq.com', tier: 'technical-news', title: 'GPT-5 benchmark vs foundation models', publishedAt: '2026-06-11T11:10:00.000Z', fetchedAt: '2026-06-11T11:48:00.000Z', extraction: 'snippet', accessPolicy: 'allowed', wordCount: 750, lang: 'en', contentHash: 'sha256-ai-a-4' },
+];
+
+const secDocuments: SourceDocument[] = [
+  { id: 'doc-sec-ex-1', url: 'https://thehackernews.com/2026/cve-2026-9999-zero-day', source: 'The Hacker News', sourceDomain: 'thehackernews.com', tier: 'security-news', title: 'CVE-2026-9999 zero-day auth bypass', publishedAt: '2026-06-11T11:35:00.000Z', fetchedAt: '2026-06-11T11:48:00.000Z', extraction: 'full', accessPolicy: 'allowed', wordCount: 620, lang: 'en', contentHash: 'sha256-sec-ex-1' },
+  { id: 'doc-sec-ex-2', url: 'https://bleepingcomputer.com/news/cve-2026-9999', source: 'Bleeping Computer', sourceDomain: 'bleepingcomputer.com', tier: 'security-news', title: 'CVE-2026-9999 exploit confirmed patched', publishedAt: '2026-06-11T11:40:00.000Z', fetchedAt: '2026-06-11T11:48:00.000Z', extraction: 'full', accessPolicy: 'allowed', wordCount: 540, lang: 'en', contentHash: 'sha256-sec-ex-2' },
+  { id: 'doc-sec-ex-3', url: 'https://nvd.nist.gov/vuln/detail/CVE-2026-9999', source: 'NVD/NIST', sourceDomain: 'nvd.nist.gov', tier: 'primary', title: 'NVD entry CVE-2026-9999 critical', publishedAt: '2026-06-11T11:25:00.000Z', fetchedAt: '2026-06-11T11:48:00.000Z', extraction: 'full', accessPolicy: 'allowed', wordCount: 280, lang: 'en', contentHash: 'sha256-sec-ex-3' },
+  { id: 'doc-sec-cr-1', url: 'https://thehackernews.com/2026/kubernetes-rce', source: 'The Hacker News', sourceDomain: 'thehackernews.com', tier: 'security-news', title: 'Kubernetes admission controller RCE', publishedAt: '2026-06-11T09:55:00.000Z', fetchedAt: '2026-06-11T11:48:00.000Z', extraction: 'full', accessPolicy: 'allowed', wordCount: 810, lang: 'en', contentHash: 'sha256-sec-cr-1' },
+  { id: 'doc-sec-cr-2', url: 'https://bleepingcomputer.com/news/kubernetes-rce-2026', source: 'Bleeping Computer', sourceDomain: 'bleepingcomputer.com', tier: 'security-news', title: 'Kubernetes k8s RCE flaw details', publishedAt: '2026-06-11T10:00:00.000Z', fetchedAt: '2026-06-11T11:48:00.000Z', extraction: 'full', accessPolicy: 'allowed', wordCount: 670, lang: 'en', contentHash: 'sha256-sec-cr-2' },
+  { id: 'doc-sec-cr-3', url: 'https://darkreading.com/kubernetes-cve-2026', source: 'Dark Reading', sourceDomain: 'darkreading.com', tier: 'security-news', title: 'Critical k8s CVE patches available', publishedAt: '2026-06-11T10:05:00.000Z', fetchedAt: '2026-06-11T11:48:00.000Z', extraction: 'snippet', accessPolicy: 'allowed', wordCount: 420, lang: 'en', contentHash: 'sha256-sec-cr-3' },
+  { id: 'doc-sec-cr-4', url: 'https://kubernetes.io/blog/2026/security-advisory-rce', source: 'Kubernetes', sourceDomain: 'kubernetes.io', tier: 'primary', title: 'Kubernetes security advisory RCE webhook', publishedAt: '2026-06-11T09:50:00.000Z', fetchedAt: '2026-06-11T11:48:00.000Z', extraction: 'full', accessPolicy: 'allowed', wordCount: 920, lang: 'en', contentHash: 'sha256-sec-cr-4' },
+];
+
+const devopsDocuments: SourceDocument[] = [
+  { id: 'doc-dv-a-1', url: 'https://kubernetes.io/blog/2026/kubernetes-1-31', source: 'Kubernetes', sourceDomain: 'kubernetes.io', tier: 'primary', title: 'Kubernetes 1.31 cloud-native features land', publishedAt: '2026-06-11T09:50:00.000Z', fetchedAt: '2026-06-11T11:48:00.000Z', extraction: 'full', accessPolicy: 'allowed', wordCount: 2100, lang: 'en', contentHash: 'sha256-dv-a-1' },
+  { id: 'doc-dv-a-2', url: 'https://thenewstack.io/kubernetes-1-31-platform-engineering', source: 'The New Stack', sourceDomain: 'thenewstack.io', tier: 'technical-news', title: 'k8s 1.31 platform engineering breakdown', publishedAt: '2026-06-11T10:00:00.000Z', fetchedAt: '2026-06-11T11:48:00.000Z', extraction: 'snippet', accessPolicy: 'allowed', wordCount: 1150, lang: 'en', contentHash: 'sha256-dv-a-2' },
+];
+
+// ---------------------------------------------------------------------------
+// The golden AggregationArtifact — Rev 3 with facts and source documents
 // ---------------------------------------------------------------------------
 
 export const GOLDEN_AGGREGATION: AggregationArtifact = {
   schemaVersion: SCHEMA_VERSION,
+  contractRevision: CONTRACT_REVISION,
   artifact: 'aggregation',
   runId: 'agg-golden-2026-06-11T06:00Z',
   upstreamRunId: null,
@@ -590,5 +782,13 @@ export const GOLDEN_AGGREGATION: AggregationArtifact = {
         degraded: false,
       },
     },
+    // Rev 3: source documents backing ExtractedFacts (supports sourceDocIds passthrough)
+    documentsByTopic: {
+      ai: aiDocuments,
+      security: secDocuments,
+      devops: devopsDocuments,
+    },
+    // Rev 3: extracted facts per cluster (drives fact-level corroboration + ChartBlock)
+    factsByCluster: GOLDEN_FACTS,
   },
 };
