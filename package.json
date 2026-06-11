@@ -1,0 +1,19 @@
+{
+  "name": "@ardurai/engine-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "End-to-end integration tests for the Ardur content pipeline (ranking → top10 → synthesizer)",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --experimental-strip-types src/tests/*.test.ts",
+    "test:verbose": "node --test --reporter spec --experimental-strip-types src/tests/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

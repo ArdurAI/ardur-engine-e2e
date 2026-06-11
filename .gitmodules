@@ -1,0 +1,9 @@
+[submodule "vendor/ardur-ranking-engine"]
+	path = vendor/ardur-ranking-engine
+	url = https://github.com/ArdurAI/ardur-ranking-engine
+[submodule "vendor/ardur-top10-engine"]
+	path = vendor/ardur-top10-engine
+	url = https://github.com/ArdurAI/ardur-top10-engine
+[submodule "vendor/ardur-article-synthesizer"]
+	path = vendor/ardur-article-synthesizer
+	url = https://github.com/ArdurAI/ardur-article-synthesizer
