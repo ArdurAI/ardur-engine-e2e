@@ -11,11 +11,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test --experimental-strip-types src/tests/*.test.ts",
     "test:verbose": "node --test --experimental-strip-types src/tests/*.test.ts",
-    "test:unit": "node --test --experimental-strip-types src/tests/ranking.test.ts src/tests/top10.test.ts src/tests/synthesizer.test.ts",
+    "test:unit": "node --test --experimental-strip-types src/tests/ranking.test.ts src/tests/top10.test.ts src/tests/synthesizer.test.ts src/tests/provenance.test.ts src/tests/schema-gate.test.ts",
     "test:pipeline": "node --test --experimental-strip-types src/tests/pipeline.test.ts"
   },
   "devDependencies": {
-    "@ardurai/contracts": "file:../ardur-contracts",
+    "@ardurai/contracts": "file:./vendor/ardur-contracts",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0"
   }

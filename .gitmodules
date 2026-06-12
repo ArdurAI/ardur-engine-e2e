@@ -10,3 +10,6 @@
 [submodule "vendor/ardur-pipeline"]
 	path = vendor/ardur-pipeline
 	url = https://github.com/ArdurAI/ardur-pipeline
+[submodule "vendor/ardur-contracts"]
+	path = vendor/ardur-contracts
+	url = https://github.com/ArdurAI/ardur-contracts.git

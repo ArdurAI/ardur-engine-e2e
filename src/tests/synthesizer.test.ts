@@ -23,6 +23,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import type { TextBlock } from '@ardurai/contracts';
 import { runRanking } from '../../vendor/ardur-ranking-engine/src/index.ts';
 import { selectTop10 } from '../../vendor/ardur-top10-engine/src/index.ts';
 import { runSynthesis } from '../../vendor/ardur-article-synthesizer/src/index.ts';
@@ -208,7 +209,7 @@ test('required sections are present in each article body', async () => {
 
   for (const article of articles.data.articles) {
     const headings = article.body
-      .filter((b) => b.type === 'heading')
+      .filter((b): b is TextBlock => b.type === 'heading')
       .map((b) => b.text ?? '');
 
     for (const required of requiredSections) {
@@ -249,7 +250,10 @@ test('deterministic articles do not contain banned lexicon words', async () => {
   const banned = new Set(VOICE_STYLE.bannedLexicon.map((w) => w.toLowerCase()));
 
   for (const article of articles.data.articles) {
-    const bodyText = article.body
+    const textBlocks = article.body.filter(
+      (b): b is TextBlock => ['paragraph', 'heading', 'list', 'quote', 'callout'].includes(b.type),
+    );
+    const bodyText = textBlocks
       .map((b) => [b.text, ...(b.items ?? [])].join(' '))
       .join(' ')
       .toLowerCase();
